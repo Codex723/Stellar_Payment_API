@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 const VALID_MEMO_TYPES = ["text", "id", "hash", "return"];
+export const MINIMUM_XLM_PAYMENT_AMOUNT = 0.01;
 
 function optionalTrimmedString() {
   return z.preprocess((value) => {
@@ -63,6 +64,14 @@ export const paymentZodSchema = z
     metadata: z.unknown().optional(),
   })
   .superRefine((body, ctx) => {
+    if (body.asset === "XLM" && body.amount < MINIMUM_XLM_PAYMENT_AMOUNT) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["amount"],
+        message: `Minimum XLM payment amount is ${MINIMUM_XLM_PAYMENT_AMOUNT}`,
+      });
+    }
+
     if (body.asset !== "XLM" && !body.asset_issuer) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ZodError } from "zod";
 import {
   formatZodError,
+  MINIMUM_XLM_PAYMENT_AMOUNT,
   paymentZodSchema,
   registerMerchantZodSchema,
 } from "./request-schemas.js";
@@ -84,6 +85,39 @@ describe("paymentZodSchema", () => {
         recipient: "GRECIPIENT",
       })
     ).toThrowError("Amount must be a positive number");
+  });
+
+  it("accepts a native XLM amount at the minimum threshold", () => {
+    const result = paymentZodSchema.parse({
+      amount: MINIMUM_XLM_PAYMENT_AMOUNT,
+      asset: "XLM",
+      recipient: "GRECIPIENT",
+    });
+
+    expect(result.amount).toBe(MINIMUM_XLM_PAYMENT_AMOUNT);
+  });
+
+  it("rejects a native XLM amount below the minimum threshold", () => {
+    expect(() =>
+      paymentZodSchema.parse({
+        amount: 0.0000001,
+        asset: "XLM",
+        recipient: "GRECIPIENT",
+      })
+    ).toThrowError(
+      `Minimum XLM payment amount is ${MINIMUM_XLM_PAYMENT_AMOUNT}`
+    );
+  });
+
+  it("does not apply the XLM minimum to non-native assets", () => {
+    const result = paymentZodSchema.parse({
+      amount: 0.0000001,
+      asset: "USDC",
+      asset_issuer: "GISSUER",
+      recipient: "GRECIPIENT",
+    });
+
+    expect(result.amount).toBe(0.0000001);
   });
 });
 

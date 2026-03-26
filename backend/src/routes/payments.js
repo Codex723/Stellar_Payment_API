@@ -42,7 +42,7 @@ const verifyPaymentRateLimit = rateLimit({
  *             properties:
  *               amount:
  *                 type: number
- *                 description: Payment amount (must be positive)
+ *                 description: Payment amount (must be positive and at least 0.01 XLM for native payments)
  *               asset:
  *                 type: string
  *                 description: Asset code (e.g. XLM, USDC)
