@@ -1,3 +1,4 @@
+import PaymentMetrics from "@/components/PaymentMetrics";
 import RecentPayments from "@/components/RecentPayments";
 
 export default function Home() {
@@ -38,6 +39,16 @@ export default function Home() {
             <p className="mt-1 text-slate-400">Send the link to customers so they can pay instantly.</p>
           </div>
         </div>
+      </section>
+
+      <section className="flex flex-col gap-4">
+        <div className="flex flex-col gap-2">
+          <h2 className="text-lg font-semibold text-white">Payment Metrics</h2>
+          <p className="text-sm text-slate-300">
+            Track your payment volume and transaction activity over the past 7 days.
+          </p>
+        </div>
+        <PaymentMetrics />
       </section>
 
       <section className="flex flex-col gap-4">
