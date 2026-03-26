@@ -5,6 +5,7 @@ create table if not exists merchants (
   notification_email text not null,
   api_key text unique not null,
   webhook_secret text not null,
+  recipient text,
   branding_config jsonb,
   created_at timestamptz not null default now()
 );
@@ -39,3 +40,18 @@ create table if not exists webhook_delivery_logs (
 
 create index if not exists webhook_delivery_logs_payment_idx on webhook_delivery_logs(payment_id);
 create index if not exists webhook_delivery_logs_timestamp_idx on webhook_delivery_logs(timestamp);
+
+create table if not exists audit_logs (
+  id uuid primary key default gen_random_uuid(),
+  merchant_id uuid not null references merchants(id) on delete cascade,
+  action text not null,
+  field_changed text,
+  old_value text,
+  new_value text,
+  ip_address text,
+  user_agent text,
+  timestamp timestamptz not null default now()
+);
+
+create index if not exists audit_logs_merchant_idx on audit_logs(merchant_id);
+create index if not exists audit_logs_timestamp_idx on audit_logs(timestamp desc);

@@ -113,6 +113,24 @@ function memoMatches(tx, expectedMemo, expectedMemoType) {
   return String(tx.memo) === String(expectedMemo);
 }
 
+/**
+ * Check if an account is a multi-sig account
+ * Issue #149: Support for Multi-sig Receiving Addresses
+ */
+async function isMultiSigAccount(accountId) {
+  try {
+    const account = await server.loadAccount(accountId);
+    const thresholds = account.thresholds;
+    const signers = account.signers;
+
+    // Multi-sig if: multiple signers OR threshold > 1
+    return signers.length > 1 || thresholds.med_threshold > 1;
+  } catch (err) {
+    console.warn(`Could not load account ${accountId}:`, err.message);
+    return false;
+  }
+}
+
 export async function findMatchingPayment({
   recipient,
   amount,
@@ -135,6 +153,9 @@ export async function findMatchingPayment({
     throw handleHorizonError(err, recipient);
   }
 
+  // Check if recipient is multi-sig for enhanced verification
+  const isMultiSig = await isMultiSigAccount(recipient);
+
   for (const payment of page.records) {
     if (payment.type !== "payment") {
       continue;
@@ -145,6 +166,11 @@ export async function findMatchingPayment({
     }
 
     if (!amountsMatch(amount, payment.amount)) {
+      continue;
+    }
+
+    // Verify payment destination matches recipient (important for multi-sig)
+    if (payment.to !== recipient) {
       continue;
     }
 
@@ -168,10 +194,60 @@ export async function findMatchingPayment({
     return {
       id: payment.id,
       transaction_hash: payment.transaction_hash,
+      is_multisig: isMultiSig,
     };
   }
 
   return null;
+}
+
+/**
+ * Create a refund transaction XDR for a merchant to sign
+ * Issue #150: Implement a Refund API Transaction Helper
+ */
+export async function createRefundTransaction({
+  sourceAccount,
+  destination,
+  amount,
+  assetCode,
+  assetIssuer,
+  memo,
+}) {
+  try {
+    const account = await server.loadAccount(sourceAccount);
+    const asset = resolveAsset(assetCode, assetIssuer);
+
+    const txBuilder = new StellarSdk.TransactionBuilder(account, {
+      fee: StellarSdk.BASE_FEE,
+      networkPassphrase:
+        NETWORK === "public"
+          ? StellarSdk.Networks.PUBLIC
+          : StellarSdk.Networks.TESTNET,
+    });
+
+    txBuilder.addOperation(
+      StellarSdk.Operation.payment({
+        destination,
+        asset,
+        amount: amount.toString(),
+      }),
+    );
+
+    if (memo) {
+      txBuilder.addMemo(StellarSdk.Memo.text(memo));
+    }
+
+    txBuilder.setTimeout(300); // 5 minutes
+
+    const transaction = txBuilder.build();
+
+    return {
+      xdr: transaction.toXDR(),
+      hash: transaction.hash().toString("hex"),
+    };
+  } catch (err) {
+    throw handleHorizonError(err, sourceAccount);
+  }
 }
 
 export function getStellarConfig() {

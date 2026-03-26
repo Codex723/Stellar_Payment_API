@@ -2,7 +2,10 @@ import "dotenv/config";
 import express from "express";
 import rateLimit from "express-rate-limit";
 import { randomUUID } from "node:crypto";
-import { findMatchingPayment } from "../lib/stellar.js";
+import {
+  findMatchingPayment,
+  createRefundTransaction,
+} from "../lib/stellar.js";
 import { supabase } from "../lib/supabase.js";
 import { validateUuidParam } from "../lib/validate-uuid.js";
 import { paymentSessionZodSchema } from "../lib/request-schemas.js";
@@ -128,9 +131,10 @@ function createPaymentsRouter({
         brandingOverrides: body.branding_overrides,
       });
 
-      const metadata = body.metadata && typeof body.metadata === "object"
-        ? { ...body.metadata }
-        : {};
+      const metadata =
+        body.metadata && typeof body.metadata === "object"
+          ? { ...body.metadata }
+          : {};
       metadata.branding_config = resolvedBrandingConfig;
 
       const payload = {
@@ -150,7 +154,9 @@ function createPaymentsRouter({
         created_at: now,
       };
 
-      const { error: insertError } = await supabase.from("payments").insert(payload);
+      const { error: insertError } = await supabase
+        .from("payments")
+        .insert(payload);
 
       if (insertError) {
         insertError.status = 500;
@@ -197,40 +203,44 @@ function createPaymentsRouter({
    *       404:
    *         description: Payment not found
    */
-  router.get("/payment-status/:id", validateUuidParam(), async (req, res, next) => {
-    try {
-      const { data, error } = await supabase
-        .from("payments")
-        .select(
-          "id, amount, asset, asset_issuer, recipient, description, memo, memo_type, status, tx_id, metadata, created_at, merchants(branding_config)",
-        )
-        .eq("id", req.params.id)
-        .maybeSingle();
+  router.get(
+    "/payment-status/:id",
+    validateUuidParam(),
+    async (req, res, next) => {
+      try {
+        const { data, error } = await supabase
+          .from("payments")
+          .select(
+            "id, amount, asset, asset_issuer, recipient, description, memo, memo_type, status, tx_id, metadata, created_at, merchants(branding_config)",
+          )
+          .eq("id", req.params.id)
+          .maybeSingle();
 
-      if (error) {
-        error.status = 500;
-        throw error;
+        if (error) {
+          error.status = 500;
+          throw error;
+        }
+
+        if (!data) {
+          return res.status(404).json({ error: "Payment not found" });
+        }
+
+        const metadataBranding = data.metadata?.branding_config || null;
+        const merchantBranding = data.merchants?.branding_config || null;
+        const brandingConfig = metadataBranding || merchantBranding || null;
+
+        const response = {
+          ...data,
+          branding_config: brandingConfig,
+        };
+        delete response.merchants;
+
+        res.json({ payment: response });
+      } catch (err) {
+        next(err);
       }
-
-      if (!data) {
-        return res.status(404).json({ error: "Payment not found" });
-      }
-
-      const metadataBranding = data.metadata?.branding_config || null;
-      const merchantBranding = data.merchants?.branding_config || null;
-      const brandingConfig = metadataBranding || merchantBranding || null;
-
-      const response = {
-        ...data,
-        branding_config: brandingConfig,
-      };
-      delete response.merchants;
-
-      res.json({ payment: response });
-    } catch (err) {
-      next(err);
-    }
-  });
+    },
+  );
 
   /**
    * @swagger
@@ -537,6 +547,214 @@ function createPaymentsRouter({
       next(err);
     }
   });
+
+  /**
+   * @swagger
+   * /api/payments/{id}/refund:
+   *   post:
+   *     summary: Generate a refund transaction for a confirmed payment
+   *     tags: [Payments]
+   *     security:
+   *       - ApiKeyAuth: []
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema:
+   *           type: string
+   *         description: Payment ID
+   *     responses:
+   *       200:
+   *         description: Refund transaction XDR
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 xdr:
+   *                   type: string
+   *                   description: Transaction XDR to sign and submit
+   *                 hash:
+   *                   type: string
+   *                   description: Transaction hash
+   *                 instructions:
+   *                   type: string
+   *       400:
+   *         description: Payment not eligible for refund
+   *       404:
+   *         description: Payment not found
+   */
+  router.post(
+    "/payments/:id/refund",
+    validateUuidParam(),
+    async (req, res, next) => {
+      try {
+        const { data: payment, error } = await supabase
+          .from("payments")
+          .select(
+            "id, merchant_id, amount, asset, asset_issuer, recipient, status, tx_id, metadata",
+          )
+          .eq("id", req.params.id)
+          .eq("merchant_id", req.merchant.id)
+          .maybeSingle();
+
+        if (error) {
+          error.status = 500;
+          throw error;
+        }
+
+        if (!payment) {
+          return res.status(404).json({ error: "Payment not found" });
+        }
+
+        if (payment.status !== "confirmed") {
+          return res.status(400).json({
+            error: "Only confirmed payments can be refunded",
+          });
+        }
+
+        // Check if already refunded
+        if (payment.metadata?.refund_status === "refunded") {
+          return res.status(400).json({
+            error: "Payment already refunded",
+          });
+        }
+
+        // Get original transaction to find the sender
+        const StellarSdk = await import("stellar-sdk");
+        const HORIZON_URL =
+          process.env.STELLAR_HORIZON_URL ||
+          (process.env.STELLAR_NETWORK === "public"
+            ? "https://horizon.stellar.org"
+            : "https://horizon-testnet.stellar.org");
+
+        const server = new StellarSdk.Horizon.Server(HORIZON_URL);
+        const tx = await server
+          .transactions()
+          .transaction(payment.tx_id)
+          .call();
+
+        const refundDestination = tx.source_account;
+
+        // Create refund transaction
+        const refundTx = await createRefundTransaction({
+          sourceAccount: payment.recipient,
+          destination: refundDestination,
+          amount: payment.amount,
+          assetCode: payment.asset,
+          assetIssuer: payment.asset_issuer,
+          memo: `Refund: ${payment.id.substring(0, 8)}`,
+        });
+
+        // Mark as refund pending
+        await supabase
+          .from("payments")
+          .update({
+            metadata: {
+              ...payment.metadata,
+              refund_status: "pending",
+              refund_xdr: refundTx.xdr,
+              refund_created_at: new Date().toISOString(),
+            },
+          })
+          .eq("id", payment.id);
+
+        res.json({
+          xdr: refundTx.xdr,
+          hash: refundTx.hash,
+          refund_amount: payment.amount,
+          refund_destination: refundDestination,
+          instructions:
+            "Sign this transaction with your merchant wallet and submit to Stellar network. Then call POST /api/payments/:id/refund/confirm with the transaction hash.",
+        });
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  /**
+   * @swagger
+   * /api/payments/{id}/refund/confirm:
+   *   post:
+   *     summary: Confirm a refund transaction has been submitted
+   *     tags: [Payments]
+   *     security:
+   *       - ApiKeyAuth: []
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema:
+   *           type: string
+   *         description: Payment ID
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             required: [tx_hash]
+   *             properties:
+   *               tx_hash:
+   *                 type: string
+   *                 description: Submitted refund transaction hash
+   *     responses:
+   *       200:
+   *         description: Refund confirmed
+   *       404:
+   *         description: Payment not found
+   */
+  router.post(
+    "/payments/:id/refund/confirm",
+    validateUuidParam(),
+    async (req, res, next) => {
+      try {
+        const { tx_hash } = req.body;
+
+        if (!tx_hash) {
+          return res.status(400).json({ error: "Transaction hash required" });
+        }
+
+        const { data: payment, error } = await supabase
+          .from("payments")
+          .select("id, metadata")
+          .eq("id", req.params.id)
+          .eq("merchant_id", req.merchant.id)
+          .maybeSingle();
+
+        if (error) {
+          error.status = 500;
+          throw error;
+        }
+
+        if (!payment) {
+          return res.status(404).json({ error: "Payment not found" });
+        }
+
+        // Update payment with refund confirmation
+        await supabase
+          .from("payments")
+          .update({
+            metadata: {
+              ...payment.metadata,
+              refund_status: "refunded",
+              refund_tx_hash: tx_hash,
+              refund_confirmed_at: new Date().toISOString(),
+            },
+          })
+          .eq("id", payment.id);
+
+        res.json({
+          status: "refunded",
+          refund_tx_hash: tx_hash,
+          message: "Refund confirmed successfully",
+        });
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
 
   return router;
 }

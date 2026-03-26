@@ -8,6 +8,8 @@ import { ZodError } from "zod";
 import createPaymentsRouter from "./routes/payments.js";
 import merchantsRouter from "./routes/merchants.js";
 import metricsRouter from "./routes/metrics.js";
+import authRouter from "./routes/auth.js";
+import auditRouter from "./routes/audit.js";
 import { requireApiKeyAuth } from "./lib/auth.js";
 import { isHorizonReachable } from "./lib/stellar.js";
 import { supabase } from "./lib/supabase.js";
@@ -119,9 +121,12 @@ app.use("/api/sessions", idempotencyMiddleware);
 app.use("/api/payments", requireApiKeyAuth());
 app.use("/api/rotate-key", requireApiKeyAuth());
 app.use("/api/merchant-branding", requireApiKeyAuth());
+app.use("/api/audit-logs", requireApiKeyAuth());
+app.use("/api", authRouter);
 app.use("/api", createPaymentsRouter({ verifyPaymentRateLimit }));
 app.use("/api", merchantsRouter);
 app.use("/api", metricsRouter);
+app.use("/api", auditRouter);
 
 app.use((err, req, res, next) => {
   if (err instanceof ZodError) {
