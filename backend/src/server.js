@@ -3,6 +3,7 @@ import { createApp } from "./app.js";
 import { connectRedisClient, closeRedisClient } from "./lib/redis.js";
 import { closePool, pool } from "./lib/db.js";
 import { validateEnvironmentVariables } from "./lib/env-validation.js";
+import { logger } from "./lib/logger.js";
 
 validateEnvironmentVariables();
 
@@ -11,22 +12,25 @@ const port = process.env.PORT || 4000;
 async function startServer() {
   const redisClient = await connectRedisClient();
 
-  const app = await createApp({ redisClient });
+  const { app, io } = await createApp({ redisClient });
 
   // Probe DB
   try {
     await pool.query("SELECT 1");
-    console.log("✅ pg pool connected");
+    logger.info("pg pool connected");
   } catch (err) {
-    console.warn("⚠️ pg pool probe failed:", err.message);
+    logger.warn({ err }, "pg pool probe failed");
   }
 
   const server = app.listen(port, () => {
-    console.log(`API listening on http://localhost:${port}`);
+    logger.info({ port }, `API listening on http://localhost:${port}`);
   });
 
+  // Attach socket.io to the HTTP server
+  io.attach(server);
+
   function shutdown(signal) {
-    console.log(`${signal} received — shutting down...`);
+    logger.info({ signal }, "shutdown signal received");
     server.close(async () => {
       await closePool();
       await closeRedisClient();
