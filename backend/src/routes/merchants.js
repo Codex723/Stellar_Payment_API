@@ -1,7 +1,7 @@
 import express from "express";
 import { randomBytes } from "crypto";
 import { supabase } from "../lib/supabase.js";
-import { requireApiKeyAuth } from "../lib/auth.js";
+import { requireApiKeyAuth, requireSessionAuth } from "../lib/auth.js";
 import { getMerchantApiUsage } from "../lib/api-usage.js";
 import {
   registerMerchantZodSchema,
@@ -509,6 +509,45 @@ router.post("/regenerate-webhook-secret", async (req, res, next) => {
     }
 
     res.json({ webhook_secret: newSecret });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * @swagger
+ * /api/merchants/generate-api-key:
+ *   post:
+ *     summary: Generate an API key using session authentication
+ *     tags: [Merchants]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: New API key issued
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 api_key:
+ *                   type: string
+ */
+router.post("/merchants/generate-api-key", requireSessionAuth(), async (req, res, next) => {
+  try {
+    const newApiKey = `sk_${randomBytes(24).toString("hex")}`;
+
+    const { error } = await supabase
+      .from("merchants")
+      .update({ api_key: newApiKey })
+      .eq("id", req.merchant.id);
+
+    if (error) {
+      error.status = 500;
+      throw error;
+    }
+
+    res.json({ api_key: newApiKey });
   } catch (err) {
     next(err);
   }
