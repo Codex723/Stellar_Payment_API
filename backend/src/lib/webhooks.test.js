@@ -1,14 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
 
+// Mock supabase to avoid initialization errors
 vi.mock("./supabase.js", () => ({
   supabase: {
     from: vi.fn(() => ({
-      insert: vi.fn(() => Promise.resolve({ error: null })),
+      insert: vi.fn().mockResolvedValue({ data: null, error: null }),
     })),
   },
 }));
 
-import { signPayload, verifyWebhook, isPrivateIP, validateWebhookUrl } from "./webhooks.js";
+import {
+  signPayload,
+  verifyWebhook,
+  verifyWebhookWithTimestamp,
+  isPrivateIP,
+  validateWebhookUrl,
+} from "./webhooks.js";
 
 describe("verifyWebhook", () => {
   it("accepts signatures generated with the current webhook secret", () => {
@@ -62,8 +69,92 @@ describe("verifyWebhook", () => {
   });
 });
 
-describe("isPrivateIP", () => {
+describe("verifyWebhookWithTimestamp", () => {
+  it("accepts valid signature with recent timestamp", () => {
+    const rawBody = JSON.stringify({ event: "payment.confirmed", amount: "10" });
+    const merchant = {
+      webhook_secret: "current-secret",
+      webhook_secret_old: null,
+      webhook_secret_expiry: null,
+    };
 
+    const signature = signPayload(rawBody, merchant.webhook_secret);
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+
+    expect(
+      verifyWebhookWithTimestamp(
+        rawBody,
+        `sha256=${signature}`,
+        timestamp,
+        merchant
+      )
+    ).toBe(true);
+  });
+
+  it("rejects old timestamp (replay attack)", () => {
+    const rawBody = JSON.stringify({ event: "payment.confirmed", amount: "10" });
+    const merchant = {
+      webhook_secret: "current-secret",
+      webhook_secret_old: null,
+      webhook_secret_expiry: null,
+    };
+
+    const signature = signPayload(rawBody, merchant.webhook_secret);
+    const oldTimestamp = (Math.floor(Date.now() / 1000) - 600).toString();
+
+    expect(
+      verifyWebhookWithTimestamp(
+        rawBody,
+        `sha256=${signature}`,
+        oldTimestamp,
+        merchant
+      )
+    ).toBe(false);
+  });
+
+  it("rejects future timestamp", () => {
+    const rawBody = JSON.stringify({ event: "payment.confirmed", amount: "10" });
+    const merchant = {
+      webhook_secret: "current-secret",
+      webhook_secret_old: null,
+      webhook_secret_expiry: null,
+    };
+
+    const signature = signPayload(rawBody, merchant.webhook_secret);
+    const futureTimestamp = (Math.floor(Date.now() / 1000) + 600).toString();
+
+    expect(
+      verifyWebhookWithTimestamp(
+        rawBody,
+        `sha256=${signature}`,
+        futureTimestamp,
+        merchant
+      )
+    ).toBe(false);
+  });
+
+  it("rejects invalid signature regardless of timestamp", () => {
+    const rawBody = JSON.stringify({ event: "payment.confirmed", amount: "10" });
+    const merchant = {
+      webhook_secret: "current-secret",
+      webhook_secret_old: null,
+      webhook_secret_expiry: null,
+    };
+
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+
+    expect(
+      verifyWebhookWithTimestamp(
+        rawBody,
+        "sha256=invalid",
+        timestamp,
+        merchant
+      )
+    ).toBe(false);
+  });
+});
+
+describe("isPrivateIP", () => {
   it("identifies private IPv4 addresses", () => {
     expect(isPrivateIP("127.0.0.1")).toBe(true);
     expect(isPrivateIP("10.0.0.1")).toBe(true);
@@ -87,7 +178,6 @@ describe("isPrivateIP", () => {
 });
 
 describe("validateWebhookUrl", () => {
-
   it("blocks localhost and loopback", async () => {
     expect(await validateWebhookUrl("http://localhost/webhook")).toBe(false);
     expect(await validateWebhookUrl("http://127.0.0.1/webhook")).toBe(false);

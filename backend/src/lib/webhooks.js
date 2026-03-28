@@ -126,6 +126,28 @@ export function verifyWebhook(rawBody, signatureHeader, merchant) {
 }
 
 /**
+ * Verifies webhook signature and timestamp to prevent replay attacks.
+ * Timestamp must be within the tolerance window (default 5 minutes).
+ */
+export function verifyWebhookWithTimestamp(rawBody, signatureHeader, timestamp, merchant, toleranceSeconds = 300) {
+  // Verify signature first
+  if (!verifyWebhook(rawBody, signatureHeader, merchant)) {
+    return false;
+  }
+
+  // Verify timestamp is within tolerance
+  if (!timestamp) return false;
+  
+  const webhookTime = parseInt(timestamp, 10);
+  if (Number.isNaN(webhookTime)) return false;
+
+  const now = Math.floor(Date.now() / 1000);
+  const timeDiff = Math.abs(now - webhookTime);
+
+  return timeDiff <= toleranceSeconds;
+}
+
+/**
  * Log webhook delivery attempt to database
  */
 async function logWebhookDelivery(paymentId, statusCode, responseBody) {
@@ -226,12 +248,14 @@ export async function sendWebhook(url, payload, secret, paymentId = null, custom
 
   const signingSecret = secret || process.env.WEBHOOK_SECRET || "";
   const rawBody = JSON.stringify(payload);
+  const timestamp = Math.floor(Date.now() / 1000).toString();
 
   const headers = {
     // Merchant custom headers first so system headers always take precedence.
     ...sanitizeCustomHeaders(customHeaders),
     "Content-Type": "application/json",
-    "User-Agent": "stellar-payment-api/0.1"
+    "User-Agent": "stellar-payment-api/0.1",
+    "Stellar-Timestamp": timestamp
   };
 
   if (signingSecret) {
