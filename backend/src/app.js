@@ -133,6 +133,7 @@ export async function createApp({ redisClient }) {
   app.use("/api/payments", requireApiKeyAuth());
   app.use("/api/rotate-key", requireApiKeyAuth());
   app.use("/api/merchant-branding", requireApiKeyAuth());
+  app.use("/api/webhook-logs", requireApiKeyAuth());
   app.use("/api/webhooks", requireApiKeyAuth());
 
   app.use("/api", createPaymentsRouter({ verifyPaymentRateLimit }));

@@ -1,8 +1,13 @@
 import express from "express";
+import { z } from "zod";
 import { supabase } from "../lib/supabase.js";
 import { sendWebhook } from "../lib/webhooks.js";
+import { queueBulkWebhookRetries } from "../lib/webhook-retries.js";
 
 const router = express.Router();
+const bulkRetrySchema = z.object({
+  log_ids: z.array(z.string().uuid()).min(1).max(100),
+});
 
 /**
  * @swagger
@@ -81,6 +86,50 @@ router.post("/webhooks/test", async (req, res, next) => {
       body: result.body,
       signed: result.signed,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/webhook-logs", async (req, res, next) => {
+  try {
+    const { rows } = await req.app.locals.pool.query(
+      `
+        select
+          l.id,
+          l.payment_id,
+          l.status_code,
+          l.timestamp as created_at,
+          p.webhook_url as url
+        from webhook_delivery_logs l
+        join payments p on p.id = l.payment_id
+        where p.merchant_id = $1
+        order by l.timestamp desc
+      `,
+      [req.merchant.id],
+    );
+
+    res.json({
+      logs: rows.map((row) => ({
+        ...row,
+        event: "payment.confirmed",
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/webhooks/retry-bulk", async (req, res, next) => {
+  try {
+    const body = bulkRetrySchema.parse(req.body || {});
+    const result = await queueBulkWebhookRetries({
+      db: req.app.locals.pool,
+      merchantId: req.merchant.id,
+      logIds: body.log_ids,
+    });
+
+    res.json(result);
   } catch (err) {
     next(err);
   }
